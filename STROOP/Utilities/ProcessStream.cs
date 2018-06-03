@@ -10,6 +10,22 @@ using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
 
+using System.Runtime.InteropServices;
+
+[StructLayout(LayoutKind.Sequential)]
+public struct MEMORY_BASIC_INFORMATION64
+{
+    public ulong BaseAddress;
+    public ulong AllocationBase;
+    public int AllocationProtect;
+    public int __alignment1;
+    public long RegionSize;
+    public int State;
+    public int Protect;
+    public int Type;
+    public int __alignment2;
+}
+
 namespace STROOP.Utilities
 {
     public class ProcessStream
@@ -34,6 +50,9 @@ namespace STROOP.Utilities
 
         public bool Readonly = false;
         public bool ShowWarning = false;
+
+        [DllImport("kernel32.dll", SetLastError = true)]
+        static extern int VirtualQueryEx(IntPtr hProcess, IntPtr lpAddress, out MEMORY_BASIC_INFORMATION64 lpBuffer, int dwLength);
 
         public IntPtr ProcessMemoryOffset
         {
@@ -175,14 +194,16 @@ namespace STROOP.Utilities
             // Open and set new process
             _process = newProcess;
             _emulator = emulator;
-            _ramStart = new IntPtr(_emulator.RamStart + dllOffset.ToInt64());
-            _processHandle = Kernal32NativeMethods.ProcessGetHandleFromId(0x0838, false, _process.Id);
+            _processHandle = Kernal32NativeMethods.ProcessGetHandleFromId(0x0C38, false, _process.Id);
 
             if ((int)_processHandle == 0)
             {
                 OnStatusChanged?.Invoke(this, new EventArgs());
                 return false;
             }
+
+            //_ramStart = new IntPtr(_emulator.RamStart + dllOffset.ToInt64());
+            _ramStart = (IntPtr)(obtainEmuRAMInformations(_processHandle) + _emulator.RamStart);
 
             try
             {
@@ -343,7 +364,11 @@ namespace STROOP.Utilities
             if (localAddress + length > _ram.Length)
                 return new byte[length];
 
-            Buffer.BlockCopy(_ram, (int)localAddress, readBytes, 0, length);
+            //Buffer.BlockCopy(_ram, (int)localAddress, readBytes, 0, length);
+            for (uint i = 0; i < length; i++, localAddress++)
+            {
+                readBytes[i] = _ram[localAddress & ~0x00000003 | _fixAddress[localAddress & 0x3]];
+            }
             return readBytes;
         }
 
@@ -356,10 +381,11 @@ namespace STROOP.Utilities
             if (address + length > _ram.Length)
                 return new byte[length];
 
-            for (uint i = 0; i < length; i++, address++)
-            {
-                readBytes[i] = _ram[address & ~0x00000003 | _fixAddress[address & 0x3]];
-            }
+            //for (uint i = 0; i < length; i++, address++)
+            //{
+            //    readBytes[i] = _ram[address & ~0x00000003 | _fixAddress[address & 0x3]];
+            //}
+            Buffer.BlockCopy(_ram, (int)address, readBytes, 0, length);
 
             return readBytes;
         }
@@ -674,6 +700,20 @@ namespace STROOP.Utilities
                 default:
                     return address;
             }
+        }
+
+        private ulong obtainEmuRAMInformations(IntPtr m_hDolphin)
+        {
+            MEMORY_BASIC_INFORMATION64 info = new MEMORY_BASIC_INFORMATION64();
+            for (IntPtr p = IntPtr.Zero;
+                     VirtualQueryEx(m_hDolphin, p, out info, Marshal.SizeOf(info)) == Marshal.SizeOf(info); p = new IntPtr(p.ToInt64() + info.RegionSize))
+            {
+                if (info.RegionSize == 0x2000000 && info.Type == 0x40000)
+                {
+                    return info.BaseAddress;
+                }
+            }
+            return 0;
         }
     }
 }
